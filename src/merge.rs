@@ -4,10 +4,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::data_file::DataFile;
+use crate::error::BarrelError;
 use crate::error::Result;
 use crate::hint_file::HintFileWriter;
+use crate::indexer::IndexEntry;
 use crate::keydir::KeyDir;
 use crate::record::current_timestamp_secs;
 
@@ -22,30 +25,35 @@ impl Compactor {
         immutable_files: &BTreeMap<u32, Arc<DataFile>>,
         max_file_size: u64,
         expiry_secs: Option<u32>,
-        next_file_id: &std::sync::atomic::AtomicU32,
+        next_file_id: &AtomicU32,
     ) -> Result<Vec<u32>> {
+        // If there no immutable files there is nothing to compact
         if immutable_files.is_empty() {
             return Ok(Vec::new());
         }
 
         let now = current_timestamp_secs();
+        // if TTL is configured we calculate the oldest allowed timestamp
+        // using saturating_sub() prevents underflow if the
+        // expiry duration is larger than the current timestamp
         let cutoff = expiry_secs.map(|exp| now.saturating_sub(exp));
 
         let mut merged_file_ids = Vec::new();
-
+        // the record with timestamp before the cutoff are expired
         let ts = current_timestamp_secs();
-        let mut nfi = next_file_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
         if ts > nfi {
-            next_file_id.store(ts + 1, std::sync::atomic::Ordering::SeqCst);
+            next_file_id.store(ts + 1, Ordering::SeqCst);
             nfi = ts;
         }
+
         let mut current_merged_id = nfi;
         merged_file_ids.push(current_merged_id);
 
         let mut current_data_file = DataFile::create(dir, current_merged_id)?;
         let mut current_hint_writer = HintFileWriter::create(dir, current_merged_id)?;
 
-        let mut keydir_updates: Vec<(Vec<u8>, crate::indexer::IndexEntry)> = Vec::new();
+        let mut keydir_updates: Vec<(Vec<u8>, IndexEntry)> = Vec::new();
 
         for (&old_file_id, old_data_file) in immutable_files {
             old_data_file.scan_records(|record, idx| {
@@ -53,23 +61,26 @@ impl Compactor {
                     if record.header.value_sz == 16 {
                         let target_file_id =
                             u64::from_be_bytes(record.value[..8].try_into().map_err(|_| {
-                                crate::error::BarrelError::CorruptedRecord {
+                                BarrelError::CorruptedRecord {
                                     offset: idx.offset,
                                     reason: "malformed targeted tombstone".into(),
                                 }
                             })?) as u32;
                         if immutable_files.contains_key(&target_file_id) {
-                            return Ok(()); // Drop targeted tombstone (target is currently being merged)
+                            // Drop targeted tombstone (target is currently being merged)
+                            return Ok(());
                         } else {
                             // Target is NOT being merged right now. Forward this tombstone.
                             if current_data_file.size() >= max_file_size {
                                 current_hint_writer.seal()?;
                                 current_data_file.sync()?;
+                                // As the file ids are timestamp based we ensure
+                                // the merged file ID is not behind the current timestamp
+                                // or older than ID already in use
                                 let ts = current_timestamp_secs();
-                                let mut nfi =
-                                    next_file_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
                                 if ts > nfi {
-                                    next_file_id.store(ts + 1, std::sync::atomic::Ordering::SeqCst);
+                                    next_file_id.store(ts + 1, Ordering::SeqCst);
                                     nfi = ts;
                                 }
                                 current_merged_id = nfi;
@@ -82,7 +93,8 @@ impl Compactor {
                             return Ok(());
                         }
                     } else {
-                        return Ok(()); // Drop standard explicit deletion tombstone
+                        // Drop standard explicit deletion tombstone
+                        return Ok(());
                     }
                 }
 
@@ -90,10 +102,11 @@ impl Compactor {
                 if let Some(c) = cutoff
                     && record.header.tstamp < c
                 {
-                    return Ok(()); // Expired; drop!
+                    // Expired; drop!
+                    return Ok(());
                 }
 
-                // Check if this record is still live in KeyDir
+                // Check if this record is still live in KeyDir, if it's dead we will skip the key
                 let is_live = if let Some(live_idx) = keydir.get(&record.key) {
                     live_idx.file_id == old_file_id && live_idx.offset == idx.offset
                 } else {
@@ -101,7 +114,8 @@ impl Compactor {
                 };
 
                 if !is_live {
-                    return Ok(()); // Dead version of key; skip!
+                    // Dead version of key; skip!
+                    return Ok(());
                 }
 
                 // Check if current merged data file has reached max_file_size
@@ -110,9 +124,9 @@ impl Compactor {
                     current_data_file.sync()?;
 
                     let ts = current_timestamp_secs();
-                    let mut nfi = next_file_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
                     if ts > nfi {
-                        next_file_id.store(ts + 1, std::sync::atomic::Ordering::SeqCst);
+                        next_file_id.store(ts + 1, Ordering::SeqCst);
                         nfi = ts;
                     }
                     current_merged_id = nfi;
@@ -145,20 +159,20 @@ impl Compactor {
 
         // Atomically update KeyDir for all merged entries
         for (key, new_idx) in keydir_updates {
-            if let Some(current_idx) = keydir.get(&key) {
-                if immutable_files.contains_key(&current_idx.file_id) {
-                    keydir.put(key, new_idx);
-                }
+            if let Some(current_idx) = keydir.get(&key)
+                && immutable_files.contains_key(&current_idx.file_id)
+            {
+                keydir.put(key, new_idx);
             }
         }
 
         // If TTL expired keys exist in keydir, remove them
         if let Some(c) = cutoff {
             for key in keydir.keys() {
-                if let Some(entry) = keydir.get(&key) {
-                    if entry.tstamp < c {
-                        keydir.remove(&key);
-                    }
+                if let Some(entry) = keydir.get(&key)
+                    && entry.tstamp < c
+                {
+                    keydir.remove(&key);
                 }
             }
         }
