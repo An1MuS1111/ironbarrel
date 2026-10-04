@@ -5,7 +5,7 @@ use crate::record::HEADER_SIZE;
 /// Index metadata stored in KeyDir mapping a key to its physical position on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexEntry {
-    /// Identifier (timestamp integer) of the `.bitcask.data` file.
+    /// Identifier (timestamp integer) of the `.ironbarrel.data` file.
     pub file_id: u32,
     /// Absolute byte offset in the data file where the 15-byte record header starts.
     pub offset: u64,

@@ -1,6 +1,6 @@
-//! Configuration options for Bitcask storage engine
+//! Configuration options for ironbarrel storage engine
 
-use crate::error::{BitcaskError, Result};
+use crate::error::{BarrelError, Result};
 use crate::record::MAX_KEY_SIZE;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -16,10 +16,10 @@ pub enum SyncStrategy {
     Interval(Duration),
 }
 
-/// Bitcask configuration settings.
+/// ironbarrel configuration settings.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Directory path where Bitcask data files, hint files, and lock files reside.
+    /// Directory path where data files, hint files, and lock files reside.
     pub directory: PathBuf,
 
     /// Maximum active file size in bytes before rolling over to a new active data file (default: 32 MB).
@@ -47,7 +47,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            directory: PathBuf::from("./bitcask_data"),
+            directory: PathBuf::from("./ironbarrel"),
             max_file_size: 32 * 1024 * 1024, // 32 MB
             expiry_secs: None,
             sync_strategy: SyncStrategy::Never,
@@ -113,13 +113,13 @@ impl Options {
     /// Validate options for self-consistency.
     pub fn validate(&self) -> Result<()> {
         if self.max_file_size == 0 {
-            return Err(BitcaskError::InvalidConfiguration(
+            return Err(BarrelError::InvalidConfiguration(
                 "max_file_size must be greater than 0".into(),
             ));
         }
 
         if self.max_key_size == 0 || self.max_key_size > MAX_KEY_SIZE {
-            return Err(BitcaskError::InvalidConfiguration(format!(
+            return Err(BarrelError::InvalidConfiguration(format!(
                 "max_key_size must be between 1 and {}",
                 MAX_KEY_SIZE
             )));

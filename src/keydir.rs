@@ -1,4 +1,4 @@
-//! Concurrent in-memory KeyDir hash table for bitcask.
+//! Concurrent in-memory KeyDir hash table for ironbarrel.
 
 use crate::indexer::IndexEntry;
 use dashmap::DashMap;

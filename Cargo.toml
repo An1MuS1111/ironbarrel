@@ -1,11 +1,11 @@
 [package]
-name = "bitcask"
+name = "ironbarrel"
 version = "0.1.0"
 edition = "2024"
 authors = ["Abdullah Al Khalid <khalidrafi1111.com>"]
 description = "A log-structured hash table key-value storage engine"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/An1MuS1111/bitcask"
+repository = "https://github.com/An1MuS1111/ironbarrel"
 readme = "README.md"
 
 [dev-dependencies]

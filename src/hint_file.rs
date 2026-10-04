@@ -10,10 +10,10 @@ use crate::error::Result;
 use crate::indexer::IndexEntry;
 use crate::record::{HINT_RECORD_SZ, HintEntry, MAX_OFFSET, create_hint_trailer};
 
-/// File suffix for Bitcask hint index files (`.bitcask.hint`).
-pub const HINT_FILE_SUFFIX: &str = ".bitcask.hint";
+/// File suffix for hint index files (`.ironbarrel.hint`).
+pub const HINT_FILE_SUFFIX: &str = ".ironbarrel.hint";
 
-/// Helper function to format file ID into  Bitcask hint filename
+/// Helper function to format file ID into hint filename
 pub fn hint_file_name(file_id: u32) -> String {
     format!("{}{}", file_id, HINT_FILE_SUFFIX)
 }

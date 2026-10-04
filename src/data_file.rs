@@ -10,20 +10,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 
-use crate::error::{BitcaskError, Result};
+use crate::error::{BarrelError, Result};
 use crate::hint_file::HintFileWriter;
 use crate::indexer::IndexEntry;
 use crate::record::{HEADER_SIZE, Record, decode_header};
 
-/// Data file name extension matching Erlang Bitcask (`.bitcask.data`).
-pub const DATA_FILE_SUFFIX: &str = ".bitcask.data";
+/// Data file name extension matching
+pub const DATA_FILE_SUFFIX: &str = ".ironbarrel.data";
 
 /// Helper function to format file ID timestamp into data filename
 pub fn data_file_name(file_id: u32) -> String {
     format!("{}{}", file_id, DATA_FILE_SUFFIX)
 }
 
-/// Bitcask append-only data log file.
+/// Append-only data log file.
 #[derive(Debug)]
 pub struct DataFile {
     /// Numeric file identifier (unix timestamp).
@@ -99,7 +99,7 @@ impl DataFile {
 
     pub fn write_record(&self, record: &Record) -> Result<IndexEntry> {
         if self.read_only {
-            return Err(BitcaskError::ReadOnlyMode);
+            return Err(BarrelError::ReadOnlyMode);
         }
 
         let encoded = record.encode()?;
@@ -136,7 +136,7 @@ impl DataFile {
     /// Reads a full record at `offset`. And verifies CRC.
     pub fn read_record(&self, offset: u64, total_sz: u32) -> Result<Record> {
         if total_sz < HEADER_SIZE as u32 {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BarrelError::CorruptedRecord {
                 offset,
                 reason: "record is smaller than its header".into(),
             });
@@ -158,7 +158,7 @@ impl DataFile {
 
         let mut cursor = &buf[..];
         let Ok(Some(header)) = decode_header(&mut cursor) else {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BarrelError::CorruptedRecord {
                 offset,
                 reason: "Incomplete record header".into(),
             });
@@ -172,15 +172,15 @@ impl DataFile {
 
         let record = Record { header, key, value };
         record.validate().map_err(|error| match error {
-            BitcaskError::CrcMismatch {
+            BarrelError::CrcMismatch {
                 expected, actual, ..
-            } => BitcaskError::CrcMismatch {
+            } => BarrelError::CrcMismatch {
                 offset,
                 expected,
                 actual,
             },
-            BitcaskError::CorruptedRecord { reason, .. } => {
-                BitcaskError::CorruptedRecord { offset, reason }
+            BarrelError::CorruptedRecord { reason, .. } => {
+                BarrelError::CorruptedRecord { offset, reason }
             }
             other => other,
         })?;

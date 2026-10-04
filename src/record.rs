@@ -3,7 +3,7 @@ use crc32fast::Hasher;
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::{BitcaskError, Result};
+use crate::error::{BarrelError, Result};
 
 /// Hard limit on key sizes.
 pub const MAX_KEY_SIZE: usize = (1 << 16) - 1; // 65,535 bytes
@@ -54,7 +54,7 @@ impl Record {
     /// Create a standard data record (put operation).
     pub fn new_standard(key: Vec<u8>, value: Vec<u8>) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BitcaskError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit(key.len()));
         }
         let tstamp = current_timestamp_secs();
         let record_type = u8::from(RecordType::Standard);
@@ -79,7 +79,7 @@ impl Record {
     /// Create an explicit deletion tombstone.
     pub fn new_deletion(key: Vec<u8>) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BitcaskError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit(key.len()));
         }
         let tstamp = current_timestamp_secs();
         let record_type = u8::from(RecordType::Tombstone);
@@ -109,7 +109,7 @@ impl Record {
         target_offset: u64,
     ) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BitcaskError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit(key.len()));
         }
 
         let mut value = Vec::with_capacity(16);
@@ -177,7 +177,7 @@ impl Record {
         if self.header.record_type != u8::from(RecordType::Standard)
             && self.header.record_type != u8::from(RecordType::Tombstone)
         {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BarrelError::CorruptedRecord {
                 offset: 0,
                 reason: format!("unknown record type {}", self.header.record_type),
             });
@@ -186,14 +186,14 @@ impl Record {
         if self.key.len() != self.header.key_sz as usize
             || self.value.len() != self.header.value_sz as usize
         {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BarrelError::CorruptedRecord {
                 offset: 0,
                 reason: "record payload lengths do not match header".into(),
             });
         }
 
         if self.is_tombstone() && self.header.value_sz != 0 && self.header.value_sz != 16 {
-            return Err(BitcaskError::CorruptedRecord {
+            return Err(BarrelError::CorruptedRecord {
                 offset: 0,
                 reason: "invalid tombstone payload length".into(),
             });
@@ -209,7 +209,7 @@ impl Record {
                 &self.value,
             );
 
-            return Err(BitcaskError::CrcMismatch {
+            return Err(BarrelError::CrcMismatch {
                 offset: 0,
                 expected: self.header.crc,
                 actual: calculated,
@@ -253,7 +253,7 @@ impl HintEntry {
         match reader.read_exact(&mut header_buf) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(BitcaskError::Io(e)),
+            Err(e) => return Err(BarrelError::Io(e)),
         }
 
         let mut cursor = &header_buf[..];
@@ -328,7 +328,7 @@ pub fn decode_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
     match reader.read_exact(&mut buf) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(BitcaskError::Io(e)),
+        Err(e) => return Err(BarrelError::Io(e)),
     }
 
     let mut cursor = &buf[..];

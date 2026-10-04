@@ -1,16 +1,16 @@
 //! An implementation of directory lock manager using OS file locks.
 //!
-//! Bitcask guarantees process safety by acquiring an exclusive file lock within the database directory.
+//! ironbarrel guarantees process safety by acquiring an exclusive file lock within the database directory.
 //! Which prevents concurrent write instances from corrupting data files.
 
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use crate::error::{BitcaskError, Result};
+use crate::error::{BarrelError, Result};
 
-/// Lock filename inside Bitcask database directory `bitcask.write.lock`.
-pub const LOCK_FILE_NAME: &str = "bitcask.write.lock";
+/// Lock filename inside ironbarrel database directory `ironbarrel.write.lock`.
+pub const LOCK_FILE_NAME: &str = "ironbarrel.write.lock";
 
 /// Directory lock handle. Automatically unlocks on drop.
 #[derive(Debug)]
@@ -34,7 +34,7 @@ impl LockFile {
         if read_only {
             // Acquire shared lock for read-only instances
             file.try_lock_shared().map_err(|_| {
-                BitcaskError::DatabaseLocked(format!(
+                BarrelError::DatabaseLocked(format!(
                     "Failed to acquire shared lock on directory {}",
                     dir.as_ref().display()
                 ))
@@ -42,7 +42,7 @@ impl LockFile {
         } else {
             // Acquire exclusive lock for read-write instances
             file.try_lock_exclusive().map_err(|_| {
-                BitcaskError::DatabaseLocked(format!(
+                BarrelError::DatabaseLocked(format!(
                     "Failed to acquire exclusive lock on directory {}. Another instance may be running.",
                     dir.as_ref().display()
                 ))

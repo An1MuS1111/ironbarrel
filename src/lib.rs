@@ -1,4 +1,4 @@
-//! # Bitcask Key-Value Storage Engine in Idiomatic Rust
+//! # ironbarrel is a Key-Value Storage Engine in Idiomatic Rust
 //!
 //! An open-source, high-performance, log-structured hash table key-value storage engine
 //! inspired by the original Bitcask design paper (*Justin Sheehy & Marc de Kruijf, Basho Technologies*).

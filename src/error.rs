@@ -1,10 +1,10 @@
-//! Custom error types and Result alias for Bitcask storage engine operations.
+//! Custom error types and Result alias for ironbarrel storage engine operations.
 
 use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum BitcaskError {
+pub enum BarrelError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
@@ -54,4 +54,4 @@ pub enum BitcaskError {
     Internal(String),
 }
 
-pub type Result<T> = std::result::Result<T, BitcaskError>;
+pub type Result<T> = std::result::Result<T, BarrelError>;
