@@ -10,4 +10,7 @@ pub mod hint_file;
 pub mod indexer;
 pub mod keydir;
 pub mod lock;
+pub mod merge;
 pub mod record;
+
+use error::{BarrelError, Result};
