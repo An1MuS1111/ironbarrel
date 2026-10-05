@@ -5,16 +5,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::config::Options;
+use crate::config::{Options, SyncStrategy};
 use crate::data_file::DataFile;
 use crate::error::{BarrelError, Result};
 use crate::hint_file::{HintFileReader, validate_hint_file};
 use crate::indexer::IndexEntry;
 use crate::keydir::KeyDir;
 use crate::lock::LockFile;
-use crate::record::{Record, current_timestamp_secs};
+use crate::record::{HEADER_SIZE, Record, current_timestamp_secs};
 
 /// Persistent identifier of a data and hint file pair.
 pub type FileId = u32;
@@ -189,5 +189,82 @@ impl IronBarrel {
     /// Open a database with default options at specified directory.
     pub fn open_default<P: AsRef<Path>>(directory: P) -> Result<Self> {
         Self::open(Options::new(directory))
+    }
+
+    /// Rotate active data file when size limit is reached.
+    fn rotate_active_file(&self, force: bool) -> Result<()> {
+        let mut active_lock = self.inner.active_file.write();
+
+        if !force && active_lock.size() < self.inner.options.max_file_size {
+            return Ok(());
+        }
+
+        active_lock.seal_hint_file()?;
+        active_lock.sync()?;
+
+        let old_active_id = active_lock.file_id();
+        let old_active = active_lock.clone();
+
+        let mut imm_lock = self.inner.immutable_files.write();
+        imm_lock.insert(old_active_id, old_active);
+
+        let now = current_timestamp_secs();
+        let next_allocated = self.inner.next_file_id.fetch_add(1, Ordering::SeqCst);
+        let new_file_id = std::cmp::max(now, next_allocated);
+
+        let new_active = Arc::new(DataFile::create(
+            &self.inner.options.directory,
+            new_file_id,
+        )?);
+
+        *active_lock = new_active;
+
+        Ok(())
+    }
+
+    /// Append records and publish their index entries while the write lock is held.
+    fn write_records_and_update_index_locked(&self, records: Vec<Record>) -> Result<()> {
+        let total_sz: u64 = records
+            .iter()
+            .map(|r| HEADER_SIZE as u64 + r.key.len() as u64 + r.value.len() as u64)
+            .sum();
+
+        let active = self.inner.active_file.read();
+
+        if active.size() + total_sz >= self.inner.options.max_file_size {
+            drop(active);
+            self.rotate_active_file(false)?;
+        } else {
+            drop(active);
+        }
+
+        let active = self.inner.active_file.read();
+        let index_entries = active.write_records_batch(&records)?;
+
+        let should_sync = match self.inner.options.sync_strategy {
+            SyncStrategy::Never => false,
+            SyncStrategy::Always => true,
+            SyncStrategy::Interval(interval) => {
+                let interval_secs = interval.as_secs().max(1);
+                current_timestamp_secs() as u64
+                    >= self.inner.last_sync_secs.load(Ordering::Relaxed) + interval_secs
+            }
+        };
+
+        if should_sync {
+            active.sync()?;
+            self.inner
+                .last_sync_secs
+                .store(current_timestamp_secs() as u64, Ordering::Relaxed);
+        }
+
+        // Only put the first record into the index (the primary data or explicit deletion)
+        if !records.is_empty() {
+            self.inner
+                .keydir
+                .put(records[0].key.clone(), index_entries[0]);
+        }
+
+        Ok(())
     }
 }

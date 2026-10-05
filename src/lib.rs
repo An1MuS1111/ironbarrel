@@ -13,3 +13,8 @@ pub mod lock;
 pub mod merge;
 pub mod record;
 pub mod storage;
+
+pub use config::{Options, SyncStrategy};
+pub use error::{BarrelError, Result};
+pub use indexer::IndexEntry;
+pub use storage::IronBarrel;
