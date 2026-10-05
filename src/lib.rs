@@ -12,3 +12,4 @@ pub mod keydir;
 pub mod lock;
 pub mod merge;
 pub mod record;
+pub mod storage;

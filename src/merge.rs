@@ -1,5 +1,4 @@
-//! Background data compaction and garbage collection (Merge Process) matching Erlang Bitcask behavior.
-
+//! Background data compaction and garbage collection (Merge Process)
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -14,7 +13,6 @@ use crate::indexer::IndexEntry;
 use crate::keydir::KeyDir;
 use crate::record::current_timestamp_secs;
 
-/// Compaction engine for Bitcask storage files.
 pub struct Compactor;
 
 impl Compactor {
