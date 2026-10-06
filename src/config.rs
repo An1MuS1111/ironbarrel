@@ -10,7 +10,7 @@ use std::time::Duration;
 pub enum SyncStrategy {
     #[default]
     Never,
-    /// Explicitly call `fsync` after every single write operation (`o_sync` / `sync_on_put`).
+    /// Explicitly call `fsync` after every single write operation
     Always,
     /// Periodically call `fsync` in a background task at specified time intervals.
     Interval(Duration),

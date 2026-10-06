@@ -14,16 +14,11 @@ use crate::hint_file::{HintFileReader, validate_hint_file};
 use crate::indexer::IndexEntry;
 use crate::keydir::KeyDir;
 use crate::lock::LockFile;
+use crate::merge::Compactor;
+use crate::merge_report::MergeReport;
 use crate::record::{HEADER_SIZE, Record, current_timestamp_secs};
-
-/// Persistent identifier of a data and hint file pair.
-pub type FileId = u32;
-
-/// Shared immutable data-file handle.
-pub type SharedDataFile = Arc<DataFile>;
-
-/// Files that are no longer receiving appends.
-pub type ImmutableFiles = BTreeMap<FileId, SharedDataFile>;
+use crate::stats::Stats;
+use crate::types::{FileId, ImmutableFiles};
 
 pub(crate) struct IronBarrelInner {
     pub(crate) options: Options,
@@ -48,6 +43,37 @@ pub(crate) struct IronBarrelInner {
     pub(crate) last_sync_secs: AtomicU64,
 }
 
+impl IronBarrelInner {
+    /// Resolve an index entry without holding the file-map lock during I/O.
+    fn file_for_entry(&self, entry: &crate::indexer::IndexEntry) -> Result<Arc<DataFile>> {
+        let active = self.active_file.read();
+        if active.file_id() == entry.file_id {
+            return Ok(active.clone());
+        }
+        drop(active);
+
+        let imm = self.immutable_files.read();
+        if let Some(file) = imm.get(&entry.file_id) {
+            Ok(file.clone())
+        } else {
+            Err(BarrelError::CorruptedRecord {
+                offset: entry.offset,
+                reason: format!("Data file {} not found", entry.file_id),
+            })
+        }
+    }
+
+    /// Read value for index entry from corresponding active or immutable data file.
+    pub fn read_value_for_entry(
+        &self,
+        key: &[u8],
+        entry: &crate::indexer::IndexEntry,
+    ) -> Result<Option<Vec<u8>>> {
+        let file = self.file_for_entry(entry)?;
+        file.read_verified_value(key, entry.offset, entry.total_sz)
+    }
+}
+
 /// Apply a scanned record using the same semantics as the live write path.
 /// Targeted tombstones only invalidate a historical physical record; they do
 /// not delete the current logical key during recovery.
@@ -58,6 +84,7 @@ fn apply_recovered_record(keydir: &KeyDir, record: Record, index: IndexEntry) {
     keydir.put(record.key, index);
 }
 
+#[derive(Clone)]
 pub struct IronBarrel {
     pub(crate) inner: Arc<IronBarrelInner>,
 }
@@ -265,6 +292,276 @@ impl IronBarrel {
                 .put(records[0].key.clone(), index_entries[0]);
         }
 
+        Ok(())
+    }
+
+    /// Trigger manual data merge/compaction over immutable files.
+    pub fn merge(&self) -> Result<MergeReport> {
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+        if self.inner.options.read_only {
+            return Err(BarrelError::ReadOnlyMode);
+        }
+
+        let _write_guard = self.inner.write_lock.lock();
+        self.rotate_active_file(true)?;
+        let immutable_files = self.inner.immutable_files.read().clone();
+        let input_files = immutable_files.keys().copied().collect::<Vec<FileId>>();
+        let bytes_before = immutable_files.values().map(|file| file.size()).sum();
+        let max_file_size = self.inner.options.max_file_size;
+        let expiry_secs = self.inner.options.expiry_secs;
+        let dir = &self.inner.options.directory;
+
+        let merged_ids = Compactor::run_merge(
+            dir,
+            &self.inner.keydir,
+            &immutable_files,
+            max_file_size,
+            expiry_secs,
+            &self.inner.next_file_id,
+        )?;
+
+        if !merged_ids.is_empty() {
+            let mut imm_write = self.inner.immutable_files.write();
+
+            for &old_id in immutable_files.keys() {
+                imm_write.remove(&old_id);
+            }
+
+            for &new_id in &merged_ids {
+                if let Ok(data_file) = DataFile::open(dir, new_id, false) {
+                    imm_write.insert(new_id, Arc::new(data_file));
+                }
+            }
+        } else {
+            // All immutable files were dead/expired and removed
+            let mut imm_write = self.inner.immutable_files.write();
+            for &old_id in immutable_files.keys() {
+                imm_write.remove(&old_id);
+            }
+        }
+
+        self.rotate_active_file(true)?;
+        let bytes_after = merged_ids
+            .iter()
+            .filter_map(|file_id| {
+                self.inner
+                    .immutable_files
+                    .read()
+                    .get(file_id)
+                    .map(|file| file.size())
+            })
+            .sum();
+        Ok(MergeReport {
+            input_files,
+            output_files: merged_ids,
+            keys_rewritten: self.inner.keydir.len(),
+            bytes_before,
+            bytes_after,
+        })
+    }
+
+    /// Fsync active data file to disk.
+    pub fn sync(&self) -> Result<()> {
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+        let active = self.inner.active_file.read();
+        active.sync()?;
+        Ok(())
+    }
+
+    /// Get vector of all active keys in database, filtering out expired keys.
+    pub fn keys(&self) -> Result<Vec<Vec<u8>>> {
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+        let now = current_timestamp_secs();
+        let all_keys = self.inner.keydir.keys();
+        if let Some(exp_secs) = self.inner.options.expiry_secs {
+            let cutoff = now.saturating_sub(exp_secs);
+            let mut valid_keys = Vec::new();
+            for k in all_keys {
+                if let Some(entry) = self.inner.keydir.get(&k) {
+                    if entry.tstamp >= cutoff {
+                        valid_keys.push(k);
+                    } else {
+                        self.inner.keydir.remove(&k);
+                    }
+                }
+            }
+            Ok(valid_keys)
+        } else {
+            Ok(all_keys)
+        }
+    }
+
+    /// Number of active keys in database.
+    pub fn len(&self) -> Result<usize> {
+        Ok(self.keys()?.len())
+    }
+
+    /// Check if database contains zero keys.
+    pub fn is_empty(&self) -> Result<bool> {
+        Ok(self.len()? == 0)
+    }
+
+    /// Return summary statistics describing current database state.
+    pub fn stats(&self) -> Result<Stats> {
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+
+        let total_keys = self.len()?;
+        let active_file = self.inner.active_file.read();
+        let active_file_id = active_file.file_id();
+
+        let imm = self.inner.immutable_files.read();
+        let total_data_files = 1 + imm.len();
+
+        let mut total_disk_bytes = active_file.size();
+        for file in imm.values() {
+            total_disk_bytes += file.size();
+        }
+
+        let live_data_bytes = self.inner.keydir.live_bytes();
+
+        Ok(Stats::new(
+            total_keys,
+            active_file_id,
+            total_data_files,
+            total_disk_bytes,
+            live_data_bytes,
+        ))
+    }
+
+    /// Run automatic compaction synchronously after a successful write when
+    /// configured garbage exceeds the configured threshold. Synchronous
+    /// compaction keeps lifecycle ownership simple and makes failures visible.
+    fn maybe_auto_merge(&self) -> Result<()> {
+        if !self.inner.options.auto_merge {
+            return Ok(());
+        }
+        let stats = self.stats()?;
+        if stats.reclaimable_bytes >= self.inner.options.merge_threshold_bytes {
+            self.merge()?;
+        }
+        Ok(())
+    }
+
+    /// Insert or update key-value pair in database.
+    pub fn put<K, V>(&self, key: K, value: V) -> Result<()>
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        let (key_bytes, val_bytes) = (key.as_ref(), value.as_ref());
+
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+
+        if self.inner.options.read_only {
+            return Err(BarrelError::ReadOnlyMode);
+        }
+
+        if key_bytes.len() > self.inner.options.max_key_size {
+            return Err(BarrelError::ExceedsSizeLimit(key_bytes.len()));
+        }
+
+        let write_guard = self.inner.write_lock.lock();
+
+        let old_idx = self.inner.keydir.get(key_bytes);
+        let active_file_id = self.inner.active_file.read().file_id();
+
+        let new_record = Record::new_standard(key_bytes.to_vec(), val_bytes.to_vec())?;
+        let mut batch = vec![new_record];
+
+        let stale = old_idx.filter(|idx| idx.file_id != active_file_id);
+
+        if let Some(idx) = stale {
+            batch.push(Record::new_targeted_tombstone(
+                key_bytes.to_vec(),
+                idx.file_id,
+                idx.offset,
+            )?);
+        }
+
+        self.write_records_and_update_index_locked(batch)?;
+        drop(write_guard);
+
+        self.maybe_auto_merge()
+    }
+
+    /// Get value for key. Returns `Ok(None)` if key does not exist or is tombstoned.
+    pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>> {
+        let key_bytes = key.as_ref();
+
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+
+        let entry = match self.inner.keydir.get(key_bytes) {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+
+        if let Some(exp) = self.inner.options.expiry_secs
+            && entry.tstamp < current_timestamp_secs().saturating_sub(exp)
+        {
+            return Ok(None);
+        }
+
+        self.inner.read_value_for_entry(key_bytes, &entry)
+    }
+
+    /// Delete key from database by appending a tombstone record matching V2 behavior.
+    pub fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<()> {
+        let key_bytes = key.as_ref();
+
+        if self.inner.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+        if self.inner.options.read_only {
+            return Err(BarrelError::ReadOnlyMode);
+        }
+
+        if key_bytes.len() > self.inner.options.max_key_size {
+            return Err(BarrelError::ExceedsSizeLimit(key_bytes.len()));
+        }
+        {
+            let _write_guard = self.inner.write_lock.lock();
+
+            // Match Basho behavior: deleting a missing key is a no-op.
+            if self.inner.keydir.get(key_bytes).is_none() {
+                return Ok(());
+            }
+
+            let record = Record::new_deletion(key_bytes.to_vec())?;
+            self.write_records_and_update_index_locked(vec![record])?;
+
+            self.inner.keydir.remove(key_bytes);
+        }
+
+        self.maybe_auto_merge()
+    }
+
+    /// Close the database instance gracefully, sealing active hint file and flushing data.
+    pub fn close(&self) -> Result<()> {
+        let _write_guard = self.inner.write_lock.lock();
+        if self.inner.is_closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let active = self.inner.active_file.read();
+        active.seal_hint_file()?;
+        active.sync()?;
+        drop(active);
+
+        // Explicitly release directory lock on close
+        self.inner.lock_file.write().take();
+        self.inner.is_closed.store(true, Ordering::Release);
         Ok(())
     }
 }

@@ -11,10 +11,15 @@ pub mod indexer;
 pub mod keydir;
 pub mod lock;
 pub mod merge;
+mod merge_report;
 pub mod record;
+pub mod stats;
 pub mod storage;
+mod types;
 
 pub use config::{Options, SyncStrategy};
 pub use error::{BarrelError, Result};
 pub use indexer::IndexEntry;
+pub use merge_report::MergeReport;
+pub use stats::Stats;
 pub use storage::IronBarrel;
