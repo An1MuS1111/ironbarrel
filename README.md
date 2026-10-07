@@ -10,6 +10,8 @@
     <a href="https://github.com/An1MuS1111/ironbarrel/blob/master/Cargo.toml"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-00bfff.svg?style=flat-square"></a>
 </p>
 
+ironbarrel is implemented through core concepts of [bitcask](https://riak.com/assets/bitcask-intro.pdf) key/value store architecture.
+
 ## Inspiration
 
 * [bitcask](<https://github.com/basho/bitcask>)  A Log-Structured Hash Table for Fast Key/Value Data.

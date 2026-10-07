@@ -12,6 +12,7 @@ use crate::data_file::DataFile;
 use crate::error::{BarrelError, Result};
 use crate::hint_file::{HintFileReader, validate_hint_file};
 use crate::indexer::IndexEntry;
+use crate::iterator::IronBarrelIterator;
 use crate::keydir::KeyDir;
 use crate::lock::LockFile;
 use crate::merge::Compactor;
@@ -64,13 +65,31 @@ impl IronBarrelInner {
     }
 
     /// Read value for index entry from corresponding active or immutable data file.
-    pub fn read_value_for_entry(
-        &self,
-        key: &[u8],
-        entry: &crate::indexer::IndexEntry,
-    ) -> Result<Option<Vec<u8>>> {
+    pub fn read_value_for_entry(&self, key: &[u8], entry: &IndexEntry) -> Result<Option<Vec<u8>>> {
         let file = self.file_for_entry(entry)?;
         file.read_verified_value(key, entry.offset, entry.total_sz)
+    }
+
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        if self.is_closed.load(Ordering::Relaxed) {
+            return Err(BarrelError::DatabaseClosed);
+        }
+
+        let entry = match self.keydir.get(key) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Check key expiration
+        if let Some(exp_secs) = self.options.expiry_secs {
+            let now = current_timestamp_secs();
+            if entry.tstamp < now.saturating_sub(exp_secs) {
+                self.keydir.remove(key);
+                return Ok(None);
+            }
+        }
+
+        self.read_value_for_entry(key, &entry)
     }
 }
 
@@ -407,6 +426,12 @@ impl IronBarrel {
         Ok(self.len()? == 0)
     }
 
+    /// Return snapshot iterator over all key-value pairs in lexicographical key order.
+    pub fn iter(&self) -> Result<IronBarrelIterator> {
+        let keys = self.keys()?;
+        Ok(IronBarrelIterator::new(self.inner.clone(), keys))
+    }
+
     /// Return summary statistics describing current database state.
     pub fn stats(&self) -> Result<Stats> {
         if self.inner.is_closed.load(Ordering::Relaxed) {
@@ -530,21 +555,24 @@ impl IronBarrel {
         if key_bytes.len() > self.inner.options.max_key_size {
             return Err(BarrelError::ExceedsSizeLimit(key_bytes.len()));
         }
-        {
-            let _write_guard = self.inner.write_lock.lock();
+        let write_guard = self.inner.write_lock.lock();
 
-            // Match Basho behavior: deleting a missing key is a no-op.
-            if self.inner.keydir.get(key_bytes).is_none() {
-                return Ok(());
-            }
-
-            let record = Record::new_deletion(key_bytes.to_vec())?;
-            self.write_records_and_update_index_locked(vec![record])?;
-
-            self.inner.keydir.remove(key_bytes);
+        // deleting a missing key is a no-op.
+        if self.inner.keydir.get(key_bytes).is_none() {
+            return Ok(());
         }
 
+        let record = Record::new_deletion(key_bytes.to_vec())?;
+        self.write_records_and_update_index_locked(vec![record])?;
+
+        self.inner.keydir.remove(key_bytes);
+        drop(write_guard);
+
         self.maybe_auto_merge()
+    }
+
+    pub fn contains<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {
+        Ok(self.get(key)?.is_some())
     }
 
     /// Close the database instance gracefully, sealing active hint file and flushing data.
