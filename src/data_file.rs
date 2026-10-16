@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
+
 use crate::error::{BarrelError, Result};
 use crate::hint_file::HintFileWriter;
 use crate::indexer::IndexEntry;
@@ -98,42 +101,51 @@ impl DataFile {
     }
 
     pub fn write_record(&self, record: &Record) -> Result<IndexEntry> {
-        if self.read_only {
-            return Err(BarrelError::ReadOnlyMode);
-        }
-
-        let encoded = record.encode()?;
-        let total_sz = encoded.len() as u32;
-
-        let mut lock = self.file.write();
-        let offset = lock.seek(SeekFrom::End(0))?;
-
-        lock.write_all(&encoded)?;
-
-        self.write_offset
-            .store(offset + total_sz as u64, Ordering::Relaxed);
-
-        let is_tombstone = record.is_tombstone();
-
-        let index_entry = IndexEntry {
-            file_id: self.file_id,
-            offset,
-            total_sz,
-            tstamp: record.header.tstamp,
-            is_tombstone,
-        };
-
-        // Checks the type of tombstone. The ordinary tombstone's value_sz = 0.
-        // But the targeted tombstone's value_sz = 16. which contains file_id + offset
-        let is_targeted_tombstone = is_tombstone && record.header.value_sz == 16;
-        if !is_targeted_tombstone && let Some(ref mut hw) = *self.hint_writer.write() {
-            hw.write_index_entry(&record.key, &index_entry)?;
-        }
-
-        Ok(index_entry)
+        let mut entries = self.write_records_batch(std::slice::from_ref(record))?;
+        Ok(entries.remove(0))
     }
 
-    /// Reads a full record at `offset`. And verifies CRC.
+    /// Cross-platform positional read helper that uses a shared read lock on Unix and Windows.
+    fn read_exact_at_pos(&self, buf: &mut [u8], offset: u64) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let lock = self.file.read();
+            lock.read_exact_at(buf, offset)?;
+        }
+
+        #[cfg(windows)]
+        {
+            let (mut buf, mut offset) = (buf, offset);
+            let lock = self.file.read();
+            while !buf.is_empty() {
+                match lock.seek_read(buf, offset) {
+                    Ok(0) => {
+                        return Err(BarrelError::Io(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "failed to fill whole buffer",
+                        )));
+                    }
+                    Ok(n) => {
+                        buf = &mut buf[n..];
+                        offset += n as u64;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(BarrelError::Io(e)),
+                }
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let mut lock = self.file.write();
+            lock.seek(SeekFrom::Start(offset))?;
+            lock.read_exact(buf)?;
+        }
+
+        Ok(())
+    }
+
+    /// Reads a full record at `offset` and verifies CRC.
     pub fn read_record(&self, offset: u64, total_sz: u32) -> Result<Record> {
         if total_sz < HEADER_SIZE as u32 {
             return Err(BarrelError::CorruptedRecord {
@@ -142,19 +154,7 @@ impl DataFile {
             });
         }
         let mut buf = vec![0u8; total_sz as usize];
-
-        #[cfg(unix)]
-        {
-            let lock = self.file.read();
-            lock.read_exact_at(&mut buf, offset)?;
-        }
-
-        #[cfg(not(unix))]
-        {
-            let mut lock = self.file.write();
-            lock.seek(SeekFrom::Start(offset))?;
-            lock.read_exact(&mut buf)?;
-        }
+        self.read_exact_at_pos(&mut buf, offset)?;
 
         let mut cursor = &buf[..];
         let Ok(Some(header)) = decode_header(&mut cursor) else {
@@ -163,6 +163,20 @@ impl DataFile {
                 reason: "Incomplete record header".into(),
             });
         };
+
+        let payload_len = (header.key_sz as usize)
+            .checked_add(header.value_sz as usize)
+            .ok_or_else(|| BarrelError::CorruptedRecord {
+                offset,
+                reason: "record payload size overflow".into(),
+            })?;
+
+        if HEADER_SIZE + payload_len != buf.len() {
+            return Err(BarrelError::CorruptedRecord {
+                offset,
+                reason: "record size does not match its header".into(),
+            });
+        }
 
         let mut key = vec![0u8; header.key_sz as usize];
         let mut value = vec![0u8; header.value_sz as usize];
@@ -204,16 +218,7 @@ impl DataFile {
             });
         }
         let mut buf = vec![0u8; total_sz as usize];
-
-        #[cfg(unix)]
-        self.file.read().read_exact_at(&mut buf, offset)?;
-
-        #[cfg(not(unix))]
-        {
-            let mut file = self.file.write();
-            file.seek(SeekFrom::Start(offset))?;
-            file.read_exact(&mut buf)?;
-        }
+        self.read_exact_at_pos(&mut buf, offset)?;
 
         let mut cursor = &buf[..];
         let header = decode_header(&mut cursor)?.ok_or_else(|| BarrelError::CorruptedRecord {
@@ -269,26 +274,6 @@ impl DataFile {
         Ok(Some(value.to_vec()))
     }
 
-    /// Fast positional read of value payload starting at `value_pos`.
-    pub fn read_value(&self, value_pos: u64, value_sz: u32) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; value_sz as usize];
-
-        #[cfg(unix)]
-        {
-            let lock = self.file.read();
-            lock.read_exact_at(&mut buf, value_pos)?;
-        }
-
-        #[cfg(not(unix))]
-        {
-            let mut lock = self.file.write();
-            lock.seek(SeekFrom::Start(value_pos))?;
-            lock.read_exact(&mut buf)?;
-        }
-
-        Ok(buf)
-    }
-
     /// Scan all records sequentially from offset 0 to EOF.
     pub fn scan_records<F>(&self, mut callback: F) -> Result<u64>
     where
@@ -306,17 +291,46 @@ impl DataFile {
             let header = match decode_header(&mut *lock) {
                 Ok(Some(h)) => h,
                 Ok(None) => break,
-                Err(err) => {
-                    tracing::error!(error = ?err, "Failed to decode header");
+                Err(BarrelError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    // Incomplete tail header at EOF: stop and truncate incomplete tail.
                     break;
                 }
+                Err(err) => return Err(err),
             };
+
+            let total_sz_u64 = (HEADER_SIZE as u64)
+                .checked_add(header.key_sz as u64)
+                .and_then(|s| s.checked_add(header.value_sz as u64))
+                .ok_or_else(|| BarrelError::CorruptedRecord {
+                    offset: record_pos,
+                    reason: "record size overflow".into(),
+                })?;
+
+            // Prevent unbounded OOM allocations and detect incomplete tail records before allocating.
+            if record_pos
+                .checked_add(total_sz_u64)
+                .is_none_or(|end| end > file_len)
+            {
+                break;
+            }
+
+            let total_sz =
+                u32::try_from(total_sz_u64).map_err(|_| BarrelError::CorruptedRecord {
+                    offset: record_pos,
+                    reason: "record exceeds u32::MAX".into(),
+                })?;
 
             let mut key = vec![0u8; header.key_sz as usize];
             let mut value = vec![0u8; header.value_sz as usize];
 
-            if lock.read_exact(&mut key).is_err() || lock.read_exact(&mut value).is_err() {
-                break;
+            if let Err(e) = lock
+                .read_exact(&mut key)
+                .and_then(|_| lock.read_exact(&mut value))
+            {
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(BarrelError::Io(e));
             }
 
             let record = Record {
@@ -340,8 +354,6 @@ impl DataFile {
                 other => other,
             })?;
 
-            let total_sz = HEADER_SIZE as u32 + header.key_sz as u32 + header.value_sz;
-
             let index_entry = IndexEntry {
                 file_id: self.file_id,
                 offset: record_pos,
@@ -350,12 +362,12 @@ impl DataFile {
                 is_tombstone: record.is_tombstone(),
             };
 
-            offset += total_sz as u64;
+            offset += total_sz_u64;
             callback(record, index_entry)?;
         }
 
         if offset < file_len && !self.read_only {
-            let _ = lock.set_len(offset);
+            lock.set_len(offset)?;
             self.write_offset.store(offset, Ordering::Relaxed);
         }
 
@@ -364,6 +376,10 @@ impl DataFile {
 
     /// Flush in-memory OS buffers to disk (fsync).
     pub fn sync(&self) -> Result<()> {
+        if self.read_only {
+            return Err(BarrelError::ReadOnlyMode);
+        }
+
         let lock = self.file.read();
         lock.sync_all()?;
         if let Some(ref mut hw) = *self.hint_writer.write() {
@@ -389,32 +405,46 @@ impl DataFile {
         }
 
         let mut lock = self.file.write();
-        let mut current_offset = self.write_offset.load(Ordering::Relaxed);
-        lock.seek(SeekFrom::Start(current_offset))?;
-        let mut index_entries = Vec::with_capacity(records.len());
+        let start_offset = self.write_offset.load(Ordering::Relaxed);
+        let mut current_offset = start_offset;
 
-        let mut hw_lock = self.hint_writer.write();
+        let mut combined_buf = Vec::new();
+        let mut index_entries = Vec::with_capacity(records.len());
 
         for record in records {
             let encoded = record.encode()?;
-            let total_sz = encoded.len() as u32;
-            lock.write_all(&encoded)?;
+            let total_sz =
+                u32::try_from(encoded.len()).map_err(|_| BarrelError::ExceedsSizeLimit {
+                    field: "encoded".into(),
+                    size: encoded.len(),
+                })?;
 
-            let index_entry = IndexEntry {
+            combined_buf.extend_from_slice(&encoded);
+            index_entries.push(IndexEntry {
                 file_id: self.file_id,
                 offset: current_offset,
                 total_sz,
                 tstamp: record.header.tstamp,
                 is_tombstone: record.is_tombstone(),
-            };
-
-            let is_targeted = record.is_tombstone() && record.header.value_sz == 16;
-            if !is_targeted && let Some(hw) = hw_lock.as_mut() {
-                hw.write_index_entry(&record.key, &index_entry)?;
-            }
-
-            index_entries.push(index_entry);
+            });
             current_offset += total_sz as u64;
+        }
+
+        lock.seek(SeekFrom::Start(start_offset))?;
+        if let Err(e) = lock.write_all(&combined_buf) {
+            let _ = lock.set_len(start_offset);
+            return Err(BarrelError::Io(e));
+        }
+
+        let mut hw_lock = self.hint_writer.write();
+        if let Some(hw) = hw_lock.as_mut() {
+            for (record, index_entry) in records.iter().zip(index_entries.iter()) {
+                let is_targeted = record.is_tombstone() && record.header.value_sz == 16;
+                if !is_targeted && hw.write_index_entry(&record.key, index_entry).is_err() {
+                    *hw_lock = None;
+                    break;
+                }
+            }
         }
 
         self.write_offset.store(current_offset, Ordering::Relaxed);
