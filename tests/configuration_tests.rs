@@ -42,7 +42,7 @@ fn configured_key_limit_applies_to_delete_as_well_as_put() -> Result<()> {
     let db = IronBarrel::open(Options::new(dir.path()).max_key_size(3))?;
     assert!(matches!(
         db.delete(b"long-key"),
-        Err(BarrelError::ExceedsSizeLimit(8))
+        Err(BarrelError::ExceedsSizeLimit { .. })
     ));
     Ok(())
 }

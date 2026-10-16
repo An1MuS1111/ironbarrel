@@ -492,7 +492,10 @@ impl IronBarrel {
         }
 
         if key_bytes.len() > self.inner.options.max_key_size {
-            return Err(BarrelError::ExceedsSizeLimit(key_bytes.len()));
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "key_bytes".into(),
+                size: key_bytes.len(),
+            });
         }
 
         let write_guard = self.inner.write_lock.lock();
@@ -553,7 +556,10 @@ impl IronBarrel {
         }
 
         if key_bytes.len() > self.inner.options.max_key_size {
-            return Err(BarrelError::ExceedsSizeLimit(key_bytes.len()));
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "key_bytes".into(),
+                size: key_bytes.len(),
+            });
         }
         let write_guard = self.inner.write_lock.lock();
 

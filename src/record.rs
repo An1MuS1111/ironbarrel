@@ -8,6 +8,8 @@ use crate::error::{BarrelError, Result};
 /// Hard limit on key sizes.
 pub const MAX_KEY_SIZE: usize = (1 << 16) - 1; // 65,535 bytes
 
+pub const MAX_VALUE_SIZE: usize = (u32::MAX as usize) - HEADER_SIZE - MAX_KEY_SIZE;
+
 /// [CRC32(4) | Tstamp(4) | Type(1) | KeySz(2) | ValSz(4)]
 pub const HEADER_SIZE: usize = 15;
 
@@ -54,8 +56,19 @@ impl Record {
     /// Create a standard data record (put operation).
     pub fn new_standard(key: Vec<u8>, value: Vec<u8>) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BarrelError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "key".into(),
+                size: key.len(),
+            });
         }
+
+        if value.len() > MAX_VALUE_SIZE {
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "value".into(),
+                size: value.len(),
+            });
+        }
+
         let tstamp = current_timestamp_secs();
         let record_type = u8::from(RecordType::Standard);
         let key_sz = key.len() as u16;
@@ -79,8 +92,12 @@ impl Record {
     /// Create an explicit deletion tombstone.
     pub fn new_deletion(key: Vec<u8>) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BarrelError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "key".into(),
+                size: key.len(),
+            });
         }
+
         let tstamp = current_timestamp_secs();
         let record_type = u8::from(RecordType::Tombstone);
         let key_sz = key.len() as u16;
@@ -109,7 +126,10 @@ impl Record {
         target_offset: u64,
     ) -> Result<Self> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(BarrelError::ExceedsSizeLimit(key.len()));
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "key".into(),
+                size: key.len(),
+            });
         }
 
         let mut value = Vec::with_capacity(16);

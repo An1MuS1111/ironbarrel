@@ -46,8 +46,8 @@ pub enum BarrelError {
     DatabaseClosed,
 
     /// Key or value exceeds max allowed length.
-    #[error("Data size exceeds limit: {0} bytes")]
-    ExceedsSizeLimit(usize),
+    #[error("Data size exceeds limits or {field}: {size} bytes")]
+    ExceedsSizeLimit { field: String, size: usize },
 
     /// Unexpected internal system error.
     #[error("Internal error: {0}")]
