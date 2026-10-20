@@ -201,8 +201,8 @@ pub fn validate_hint_file<P: AsRef<Path>>(path: P, data_file_size: u64) -> bool 
         return false;
     };
 
-    let mut verify_reader = BufReader::new(verify_file);
-    let max_data_end = data_file_size.saturating_add(1);
+    // We restrict decoding strictly to the payload before the 18-byte header
+    let mut verify_reader = BufReader::new(verify_file).take(payload_len);
     loop {
         match HintEntry::decode(&mut verify_reader) {
             Ok(Some(hint)) => {
@@ -210,11 +210,16 @@ pub fn validate_hint_file<P: AsRef<Path>>(path: P, data_file_size: u64) -> bool 
                     return false;
                 };
 
-                if end > max_data_end {
+                if end > data_file_size {
                     return false;
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                if verify_reader.limit() != 0 {
+                    return false;
+                }
+                break;
+            }
             Err(_) => return false,
         }
     }

@@ -158,7 +158,19 @@ impl Record {
 
     /// Encode record into binary format.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let total_size = HEADER_SIZE + self.key.len() + self.value.len();
+        let total_size = HEADER_SIZE
+            .checked_add(self.key.len())
+            .and_then(|sz| sz.checked_add(self.value.len()))
+            .ok_or(BarrelError::ExceedsSizeLimit {
+                field: "total_size".into(),
+                size: usize::MAX,
+            })?;
+
+        u32::try_from(total_size).map_err(|_| BarrelError::ExceedsSizeLimit {
+            field: "total_size".into(),
+            size: usize::MAX,
+        })?;
+
         let mut buf = Vec::with_capacity(total_size);
 
         buf.write_u32::<BigEndian>(self.header.crc)?;
@@ -200,6 +212,13 @@ impl Record {
             return Err(BarrelError::CorruptedRecord {
                 offset: 0,
                 reason: format!("unknown record type {}", self.header.record_type),
+            });
+        }
+
+        if self.value.len() > MAX_VALUE_SIZE {
+            return Err(BarrelError::ExceedsSizeLimit {
+                field: "value".into(),
+                size: self.value.len(),
             });
         }
 
@@ -270,10 +289,11 @@ impl HintEntry {
 
     pub fn decode<R: Read>(reader: &mut R) -> Result<Option<Self>> {
         let mut header_buf = [0u8; HINT_RECORD_SZ];
-        match reader.read_exact(&mut header_buf) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(BarrelError::Io(e)),
+        // We read the first byte separately to distinguish clean EOF (0 bytes remaining)
+        // from a truncated header (1..17 bytes remaining).
+        match reader.read(&mut header_buf[..1])? {
+            0 => return Ok(None),
+            _ => reader.read_exact(&mut header_buf[1..])?,
         }
 
         let mut cursor = &header_buf[..];
@@ -285,8 +305,16 @@ impl HintEntry {
         let is_tombstone = (offset_packed >> 63) == 1;
         let offset = offset_packed & MAX_OFFSET;
 
-        if tstamp == 0 && key_sz == 0 && offset == MAX_OFFSET {
+        if tstamp == 0 && key_sz == 0 && is_tombstone && offset == MAX_OFFSET {
             return Ok(None);
+        }
+
+        let min_record_sz = (HEADER_SIZE as u32) + (key_sz as u32);
+        if total_sz < min_record_sz {
+            return Err(BarrelError::CorruptedRecord {
+                offset,
+                reason: "hint entry total_sz is smaller than header + key_sz".into(),
+            });
         }
 
         let mut key = vec![0u8; key_sz as usize];
@@ -345,10 +373,9 @@ pub fn calculate_crc(
 
 pub fn decode_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
     let mut buf = [0u8; HEADER_SIZE];
-    match reader.read_exact(&mut buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(BarrelError::Io(e)),
+    match reader.read(&mut buf[..1])? {
+        0 => return Ok(None),
+        _ => reader.read_exact(&mut buf[1..])?,
     }
 
     let mut cursor = &buf[..];
@@ -370,7 +397,7 @@ pub fn decode_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
 pub fn current_timestamp_secs() -> u32 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time prior to UNIX epoch")
+        .unwrap_or_default()
         .as_secs() as u32
 }
 
