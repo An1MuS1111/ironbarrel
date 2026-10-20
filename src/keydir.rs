@@ -2,6 +2,7 @@
 
 use crate::indexer::IndexEntry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// In-memory KeyDir index.
@@ -66,9 +67,40 @@ impl KeyDir {
         }
     }
 
-    /// Check whether non-tombstone key exists in KeyDir.
-    pub fn contains(&self, key: &[u8]) -> bool {
-        self.get(key).is_some()
+    /// Atomically remove key only if `predicate` returns `true` for the current `IndexEntry`.
+    pub fn remove_if<F>(&self, key: &[u8], predicate: F) -> Option<IndexEntry>
+    where
+        F: FnOnce(&IndexEntry) -> bool,
+    {
+        if let Some((_, old_entry)) = self.entries.remove_if(key, |_, v| predicate(v)) {
+            self.live_bytes
+                .fetch_sub(old_entry.total_sz as u64, Ordering::Relaxed);
+            Some(old_entry)
+        } else {
+            None
+        }
+    }
+
+    /// Atomically replace an existing entry only if `predicate` holds for the current entry.
+    pub fn replace_if<F>(&self, key: Vec<u8>, new_entry: IndexEntry, predicate: F) -> bool
+    where
+        F: FnOnce(&IndexEntry) -> bool,
+    {
+        match self.entries.entry(key) {
+            Entry::Occupied(mut occ) => {
+                if predicate(occ.get()) {
+                    let old_entry = occ.insert(new_entry);
+                    self.live_bytes
+                        .fetch_sub(old_entry.total_sz as u64, Ordering::Relaxed);
+                    self.live_bytes
+                        .fetch_add(new_entry.total_sz as u64, Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(_) => false,
+        }
     }
 
     /// Number of active keys in KeyDir.
@@ -89,12 +121,6 @@ impl KeyDir {
     /// Return all active keys.
     pub fn keys(&self) -> Vec<Vec<u8>> {
         self.entries.iter().map(|r| r.key().clone()).collect()
-    }
-
-    /// Clear all entries.
-    pub fn clear(&self) {
-        self.entries.clear();
-        self.live_bytes.store(0, Ordering::Relaxed);
     }
 }
 

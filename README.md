@@ -19,4 +19,4 @@ ironbarrel is implemented through core concepts of [bitcask](https://riak.com/as
 
 ## License
 
-The Mini-LSM starter code and solution are under [MIT](license-MIT) & [Apache 2.0 license](LICENSE-APACHE).
+The ironbarrel codebase is under [MIT](license-MIT) & [Apache 2.0 license](LICENSE-APACHE).
