@@ -7,8 +7,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::indexer::IndexEntry;
-use crate::record::{HINT_RECORD_SZ, HintEntry, MAX_OFFSET, create_hint_trailer};
+use crate::record::{HINT_RECORD_SZ, HintEntry, IndexEntry, MAX_OFFSET, create_hint_trailer};
 
 /// File suffix for hint index files (`.ironbarrel.hint`).
 pub const HINT_FILE_SUFFIX: &str = ".ironbarrel.hint";

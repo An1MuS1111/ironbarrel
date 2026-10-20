@@ -7,7 +7,6 @@ pub mod config;
 pub mod data_file;
 pub mod error;
 pub mod hint_file;
-pub mod indexer;
 pub mod iterator;
 pub mod keydir;
 pub mod lock;
@@ -20,7 +19,6 @@ mod types;
 
 pub use config::{Options, SyncStrategy};
 pub use error::{BarrelError, Result};
-pub use indexer::IndexEntry;
 pub use iterator::IronBarrelIterator;
 pub use merge_report::MergeReport;
 pub use stats::Stats;

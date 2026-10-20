@@ -5,13 +5,32 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::data_file::DataFile;
+use parking_lot::RwLock;
+
+use crate::data_file::{DataFile, data_file_name};
 use crate::error::BarrelError;
 use crate::error::Result;
-use crate::hint_file::HintFileWriter;
-use crate::indexer::IndexEntry;
+use crate::hint_file::hint_file_name;
 use crate::keydir::KeyDir;
-use crate::record::current_timestamp_secs;
+use crate::record::{IndexEntry, current_timestamp_secs};
+use crate::types::ImmutableFiles;
+
+/// Monotonically allocate a unique `FileId` that never regresses behind wall-clock time
+/// or collides with previously allocated file IDs.
+pub(crate) fn allocate_file_id(next_file_id: &AtomicU32) -> u32 {
+    let now = current_timestamp_secs();
+    loop {
+        let current = next_file_id.load(Ordering::SeqCst);
+        let allocated = std::cmp::max(now, current);
+        let next = allocated.saturating_add(1);
+        if next_file_id
+            .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return allocated;
+        }
+    }
+}
 
 pub struct Compactor;
 
@@ -20,13 +39,14 @@ impl Compactor {
     pub fn run_merge(
         dir: &Path,
         keydir: &KeyDir,
-        immutable_files: &BTreeMap<u32, Arc<DataFile>>,
+        immutable_files_lock: &RwLock<ImmutableFiles>,
+        snapshot_files: &BTreeMap<u32, Arc<DataFile>>,
         max_file_size: u64,
         expiry_secs: Option<u32>,
         next_file_id: &AtomicU32,
     ) -> Result<Vec<u32>> {
         // If there no immutable files there is nothing to compact
-        if immutable_files.is_empty() {
+        if snapshot_files.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -35,25 +55,18 @@ impl Compactor {
         // using saturating_sub() prevents underflow if the
         // expiry duration is larger than the current timestamp
         let cutoff = expiry_secs.map(|exp| now.saturating_sub(exp));
+        let mut current_merged_id = allocate_file_id(next_file_id);
+        let mut merged_file_ids = vec![current_merged_id];
 
-        let mut merged_file_ids = Vec::new();
-        // the record with timestamp before the cutoff are expired
-        let ts = current_timestamp_secs();
-        let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
-        if ts > nfi {
-            next_file_id.store(ts + 1, Ordering::SeqCst);
-            nfi = ts;
-        }
-
-        let mut current_merged_id = nfi;
-        merged_file_ids.push(current_merged_id);
-
+        // DataFile::create already initializes and manages the companion HintFileWriter
         let mut current_data_file = DataFile::create(dir, current_merged_id)?;
-        let mut current_hint_writer = HintFileWriter::create(dir, current_merged_id)?;
 
-        let mut keydir_updates: Vec<(Vec<u8>, IndexEntry)> = Vec::new();
+        // We store a staging buffer that holds (key, old_file_id, old_offset, new_index_entry)
+        // So, every live record that was copied to a new compacted data file
+        // and now needs its in-memory KeyDir pointer updated
+        let mut keydir_updates: Vec<(Vec<u8>, u32, u64, IndexEntry)> = Vec::new();
 
-        for (&old_file_id, old_data_file) in immutable_files {
+        for (&old_file_id, old_data_file) in snapshot_files {
             old_data_file.scan_records(|record, idx| {
                 if record.is_tombstone() {
                     if record.header.value_sz == 16 {
@@ -64,28 +77,17 @@ impl Compactor {
                                     reason: "malformed targeted tombstone".into(),
                                 }
                             })?) as u32;
-                        if immutable_files.contains_key(&target_file_id) {
+                        if snapshot_files.contains_key(&target_file_id) {
                             // Drop targeted tombstone (target is currently being merged)
                             return Ok(());
                         } else {
                             // Target is NOT being merged right now. Forward this tombstone.
                             if current_data_file.size() >= max_file_size {
-                                current_hint_writer.seal()?;
+                                current_data_file.seal_hint_file()?;
                                 current_data_file.sync()?;
-                                // As the file ids are timestamp based we ensure
-                                // the merged file ID is not behind the current timestamp
-                                // or older than ID already in use
-                                let ts = current_timestamp_secs();
-                                let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
-                                if ts > nfi {
-                                    next_file_id.store(ts + 1, Ordering::SeqCst);
-                                    nfi = ts;
-                                }
-                                current_merged_id = nfi;
+                                current_merged_id = allocate_file_id(next_file_id);
                                 merged_file_ids.push(current_merged_id);
                                 current_data_file = DataFile::create(dir, current_merged_id)?;
-                                current_hint_writer =
-                                    HintFileWriter::create(dir, current_merged_id)?;
                             }
                             current_data_file.write_record(&record)?;
                             return Ok(());
@@ -116,27 +118,18 @@ impl Compactor {
                     return Ok(());
                 }
 
-                // Check if current merged data file has reached max_file_size
+                // Roll over merged output file if it reached max_file_size
                 if current_data_file.size() >= max_file_size {
-                    current_hint_writer.seal()?;
+                    current_data_file.seal_hint_file()?;
                     current_data_file.sync()?;
-
-                    let ts = current_timestamp_secs();
-                    let mut nfi = next_file_id.fetch_add(1, Ordering::SeqCst);
-                    if ts > nfi {
-                        next_file_id.store(ts + 1, Ordering::SeqCst);
-                        nfi = ts;
-                    }
-                    current_merged_id = nfi;
+                    current_merged_id = allocate_file_id(next_file_id);
                     merged_file_ids.push(current_merged_id);
-
                     current_data_file = DataFile::create(dir, current_merged_id)?;
-                    current_hint_writer = HintFileWriter::create(dir, current_merged_id)?;
                 }
 
                 // Write live record to new merged file
                 let new_idx = current_data_file.write_record(&record)?;
-                keydir_updates.push((record.key.clone(), new_idx));
+                keydir_updates.push((record.key, old_file_id, idx.offset, new_idx));
                 Ok(())
             })?;
         }
@@ -144,44 +137,58 @@ impl Compactor {
         // Finalize or remove empty merged file
         if current_data_file.size() == 0 {
             let data_path = current_data_file.path().to_path_buf();
-            let hint_path = current_hint_writer.path().to_path_buf();
+            let hint_path = dir.join(hint_file_name(current_merged_id));
             drop(current_data_file);
-            drop(current_hint_writer);
             let _ = fs::remove_file(data_path);
             let _ = fs::remove_file(hint_path);
             merged_file_ids.retain(|&id| id != current_merged_id);
         } else {
-            current_hint_writer.seal()?;
+            current_data_file.seal_hint_file()?;
             current_data_file.sync()?;
+            drop(current_data_file);
         }
 
-        // Atomically update KeyDir for all merged entries
-        for (key, new_idx) in keydir_updates {
-            if let Some(current_idx) = keydir.get(&key)
-                && immutable_files.contains_key(&current_idx.file_id)
-            {
-                keydir.put(key, new_idx);
-            }
+        // We register new merged files in `immutable_files_lock` BEFORE updating KeyDir
+        // so concurrent lock-free readers never encounter an unknown `FileId`.
+        let mut imm_write = immutable_files_lock.write();
+        for &new_id in &merged_file_ids {
+            let data_file = DataFile::open(dir, new_id, true)?;
+            imm_write.insert(new_id, Arc::new(data_file));
+        }
+        drop(imm_write);
+
+        // Atomically update KeyDir entries if they still point to the old record.
+        for (key, old_file_id, old_offset, new_idx) in keydir_updates {
+            keydir.replace_if(key, new_idx, |curr| {
+                curr.file_id == old_file_id && curr.offset == old_offset
+            });
         }
 
-        // If TTL expired keys exist in keydir, remove them
+        // Atomically evict any expired keys from KeyDir.
         if let Some(c) = cutoff {
             for key in keydir.keys() {
-                if let Some(entry) = keydir.get(&key)
-                    && entry.tstamp < c
-                {
-                    keydir.remove(&key);
-                }
+                keydir.remove_if(&key, |entry| entry.tstamp < c);
             }
         }
 
-        // Remove old merged immutable data files and hint files from disk
-        for &old_file_id in immutable_files.keys() {
-            let data_path = dir.join(crate::data_file::data_file_name(old_file_id));
-            let hint_path = dir.join(crate::hint_file::hint_file_name(old_file_id));
+        // Remove old handles from `immutable_files_lock` BEFORE unlinking from disk.
+        let mut imm_write = immutable_files_lock.write();
+        for &old_id in snapshot_files.keys() {
+            imm_write.remove(&old_id);
+        }
+        drop(imm_write);
 
-            let _ = fs::remove_file(data_path);
-            let _ = fs::remove_file(hint_path);
+        // Remove old merged immutable data files and hint files from disk.
+        for &old_file_id in snapshot_files.keys() {
+            let data_path = dir.join(data_file_name(old_file_id));
+            let hint_path = dir.join(hint_file_name(old_file_id));
+
+            if let Err(e) = fs::remove_file(&data_path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(BarrelError::Io(e));
+            }
+            let _ = fs::remove_file(&hint_path);
         }
 
         Ok(merged_file_ids)

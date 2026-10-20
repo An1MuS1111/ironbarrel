@@ -15,8 +15,7 @@ use std::os::windows::fs::FileExt;
 
 use crate::error::{BarrelError, Result};
 use crate::hint_file::HintFileWriter;
-use crate::indexer::IndexEntry;
-use crate::record::{HEADER_SIZE, Record, calculate_crc, decode_header};
+use crate::record::{HEADER_SIZE, IndexEntry, Record, calculate_crc, decode_header};
 
 /// Data file name extension matching
 pub const DATA_FILE_SUFFIX: &str = ".ironbarrel.data";
@@ -399,7 +398,7 @@ impl DataFile {
     pub fn write_records_batch(
         &self,
         records: &[crate::record::Record],
-    ) -> Result<Vec<crate::indexer::IndexEntry>> {
+    ) -> Result<Vec<IndexEntry>> {
         if self.read_only {
             return Err(BarrelError::ReadOnlyMode);
         }

@@ -19,6 +19,21 @@ pub const HINT_RECORD_SZ: usize = 18;
 /// Bit mask for offset in hint file (63-bit offset with bit 63 as tombstone flag).
 pub const MAX_OFFSET: u64 = 0x7FFFFFFFFFFFFFFF;
 
+/// Index metadata stored in KeyDir mapping a key to its physical position on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexEntry {
+    /// Identifier (timestamp integer) of the `.ironbarrel.data` file.
+    pub file_id: u32,
+    /// Absolute byte offset in the data file where the 15-byte record header starts.
+    pub offset: u64,
+    /// Total byte size of the data record (15 + key size + value size).
+    pub total_sz: u32,
+    /// Unix timestamp in seconds when the entry was recorded.
+    pub tstamp: u32,
+    /// Is this record a tombstone deletion marker.
+    pub is_tombstone: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
     Standard = 0x01,

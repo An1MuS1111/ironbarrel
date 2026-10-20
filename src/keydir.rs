@@ -1,6 +1,6 @@
 //! Concurrent in-memory KeyDir hash table for ironbarrel.
 
-use crate::indexer::IndexEntry;
+use crate::record::IndexEntry;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use std::sync::atomic::{AtomicU64, Ordering};
