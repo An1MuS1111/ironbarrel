@@ -1,14 +1,16 @@
 [package]
 name = "ironbarrel"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-authors = ["Abdullah Al Khalid <khalidrafi1111.com>"]
+authors = ["Abdullah Al Khalid <khalidrafi1111@gmail.com>"]
 description = "A log-structured hash table key-value storage engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/An1MuS1111/ironbarrel"
 readme = "README.md"
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+hdrhistogram = "7.5"
 tempfile = "3.27.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
@@ -20,6 +22,14 @@ dashmap = "6.*"
 fs2 = "0.4.3"
 parking_lot = "0.12.5"
 tracing = { version = "0.1.44", features = ["release_max_level_debug"] }
+
+[[bench]]
+name = "micro"
+harness = false
+
+[[example]]
+name = "ironbarrel_bench"
+path = "examples/ironbarrel_bench.rs"
 
 [[example]]
 name = "basic_crud"
@@ -36,3 +46,7 @@ path = "examples/concurrent_workers.rs"
 [[example]]
 name = "sync_strategies"
 path = "examples/sync_strategies.rs"
+
+[profile.release]
+debug = "line-tables-only"
+
