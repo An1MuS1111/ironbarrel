@@ -1,3 +1,6 @@
 /target
 /data
 .DS_Store
+perf.data*
+*.svg
+/bench
