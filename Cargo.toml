@@ -10,6 +10,8 @@ readme = "README.md"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
 [dependencies]
 crc32fast = "1.5.2"
 thiserror  = "2.0.21"
@@ -17,4 +19,20 @@ byteorder = "1.5.0"
 dashmap = "6.*"
 fs2 = "0.4.3"
 parking_lot = "0.12.5"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", features = ["release_max_level_debug"] }
+
+[[example]]
+name = "basic_crud"
+path = "examples/basic_crud.rs"
+
+[[example]]
+name = "ttl_expiration"
+path = "examples/ttl_expiration.rs"
+
+[[example]]
+name = "concurrent_workers"
+path = "examples/concurrent_workers.rs"
+
+[[example]]
+name = "sync_strategies"
+path = "examples/sync_strategies.rs"

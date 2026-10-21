@@ -113,17 +113,40 @@ impl Options {
     /// Validate options for self-consistency.
     pub fn validate(&self) -> Result<()> {
         if self.max_file_size == 0 {
+            tracing::warn!(
+                max_file_size = self.max_file_size,
+                "Invalid configuration: max_file_size must be greater than 0"
+            );
+
             return Err(BarrelError::InvalidConfiguration(
                 "max_file_size must be greater than 0".into(),
             ));
         }
 
         if self.max_key_size == 0 || self.max_key_size > MAX_KEY_SIZE {
+            tracing::warn!(
+                max_key_size = self.max_key_size,
+                limit = MAX_KEY_SIZE,
+                "Invalid configuration: max_key_size out of bounds"
+            );
+
             return Err(BarrelError::InvalidConfiguration(format!(
                 "max_key_size must be between 1 and {}",
                 MAX_KEY_SIZE
             )));
         }
+
+        tracing::debug!(
+            directory = %self.directory.display(),
+            max_file_size = self.max_file_size,
+            max_key_size = self.max_key_size,
+            expiry_secs = ?self.expiry_secs,
+            sync_strategy = ?self.sync_strategy,
+            read_only = self.read_only,
+            auto_merge = self.auto_merge,
+            merge_threshold_bytes = self.merge_threshold_bytes,
+            "Configuration validated"
+        );
         Ok(())
     }
 }
