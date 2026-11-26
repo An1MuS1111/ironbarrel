@@ -3,8 +3,7 @@
 //! ironbarrel guarantees process safety by acquiring an exclusive file lock within the database directory.
 //! Which prevents concurrent write instances from corrupting data files.
 
-use fs2::FileExt;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use crate::error::{BarrelError, Result};
@@ -31,22 +30,31 @@ impl LockFile {
             .truncate(false)
             .open(&path)?;
 
-        if read_only {
-            // Acquire shared lock for read-only instances
-            file.try_lock_shared().map_err(|_| {
-                BarrelError::DatabaseLocked(format!(
-                    "Failed to acquire shared lock on directory {}",
-                    dir.as_ref().display()
-                ))
-            })?;
+        let attempt = if read_only {
+            // Shared lock: any number of read-only instances may hold it.
+            file.try_lock_shared()
         } else {
-            // Acquire exclusive lock for read-write instances
-            file.try_lock_exclusive().map_err(|_| {
-                BarrelError::DatabaseLocked(format!(
-                    "Failed to acquire exclusive lock on directory {}. Another instance may be running.",
+            // Exclusive lock: one read-write instance, and no readers.
+            file.try_lock()
+        };
+
+        match attempt {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                let reason = if read_only {
+                    "a read-write instance holds the exclusive lock"
+                } else {
+                    "another instance may be running"
+                };
+                return Err(BarrelError::DatabaseLocked(format!(
+                    "Failed to acquire {} lock on directory {}: {reason}.",
+                    if read_only { "shared" } else { "exclusive" },
                     dir.as_ref().display()
-                ))
-            })?;
+                )));
+            }
+            // A real I/O failure (permissions, unsupported filesystem) is not
+            // "locked", so report it as the I/O error it is.
+            Err(TryLockError::Error(e)) => return Err(BarrelError::Io(e)),
         }
 
         Ok(Self { path, file })

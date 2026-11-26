@@ -7,6 +7,11 @@ description = "A log-structured hash table key-value storage engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/An1MuS1111/ironbarrel"
 readme = "README.md"
+documentation = "https://docs.rs/ironbarrel"
+keywords = ["key-value", "storage-engine", "bitcask", "database", "embedded"]
+categories = ["database-implementations", "data-structures"]
+rust-version = "1.89"
+exclude = [".github/", ".DS_Store", "cliff.toml", "deny.toml", "run_suite.sh", "rustfmt.toml"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -19,8 +24,7 @@ crc32fast = "1.5.2"
 thiserror  = "2.0.21"
 byteorder = "1.5.0"
 dashmap = "6.*"
-fs2 = "0.4.3"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 tracing = { version = "0.1.44", features = ["release_max_level_debug"] }
 
 [[bench]]
