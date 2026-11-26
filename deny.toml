@@ -1,0 +1,32 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with:  cargo deny check
+
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+
+[licenses]
+# Every dependency must be under one of these licenses.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Warn (not fail) when two versions of the same crate end up in the build.
+multiple-versions = "warn"
+wildcards = "deny"
+# A path or git dependency without a version is fine for workspace crates only.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
