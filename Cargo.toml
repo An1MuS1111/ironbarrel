@@ -10,7 +10,7 @@ readme = "README.md"
 documentation = "https://docs.rs/ironbarrel"
 keywords = ["key-value", "storage-engine", "bitcask", "database", "embedded"]
 categories = ["database-implementations", "data-structures"]
-rust-version = "1.89"
+rust-version = "1.95"
 exclude = [".github/", ".DS_Store", "cliff.toml", "deny.toml", "run_suite.sh", "rustfmt.toml"]
 
 [dev-dependencies]
