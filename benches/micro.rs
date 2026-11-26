@@ -52,7 +52,11 @@ struct Rng(u64);
 impl Rng {
     fn new(seed: u64) -> Self {
         // xorshift has a fixed point at zero.
-        Self(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+        Self(if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        })
     }
 
     #[inline]
@@ -271,30 +275,34 @@ fn bench_db_put(c: &mut Criterion) {
         };
 
         g.throughput(Throughput::Bytes(size as u64));
-        g.bench_with_input(BenchmarkId::new("overwrite_10k_keys", size), &size, |b, _| {
-            b.iter_custom(|iters| {
-                let mut elapsed = Duration::ZERO;
-                let mut remaining = iters;
-                while remaining > 0 {
-                    if let Some((f, _)) = slot.take_if(|(_, w)| *w >= PUT_DISK_BUDGET) {
-                        f.close();
-                    }
-                    let (f, written) = slot.get_or_insert_with(fresh);
-                    let room = (PUT_DISK_BUDGET - *written).div_ceil(bytes_per_put).max(1);
-                    let chunk = remaining.min(room);
+        g.bench_with_input(
+            BenchmarkId::new("overwrite_10k_keys", size),
+            &size,
+            |b, _| {
+                b.iter_custom(|iters| {
+                    let mut elapsed = Duration::ZERO;
+                    let mut remaining = iters;
+                    while remaining > 0 {
+                        if let Some((f, _)) = slot.take_if(|(_, w)| *w >= PUT_DISK_BUDGET) {
+                            f.close();
+                        }
+                        let (f, written) = slot.get_or_insert_with(fresh);
+                        let room = (PUT_DISK_BUDGET - *written).div_ceil(bytes_per_put).max(1);
+                        let chunk = remaining.min(room);
 
-                    let start = Instant::now();
-                    for _ in 0..chunk {
-                        f.db.put(keys[rng.below(PUT_KEYS)], &value).unwrap();
-                    }
-                    elapsed += start.elapsed();
+                        let start = Instant::now();
+                        for _ in 0..chunk {
+                            f.db.put(keys[rng.below(PUT_KEYS)], &value).unwrap();
+                        }
+                        elapsed += start.elapsed();
 
-                    *written += chunk * bytes_per_put;
-                    remaining -= chunk;
-                }
-                elapsed
-            })
-        });
+                        *written += chunk * bytes_per_put;
+                        remaining -= chunk;
+                    }
+                    elapsed
+                })
+            },
+        );
 
         if let Some((f, _)) = slot.take() {
             f.close();

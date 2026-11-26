@@ -5,8 +5,8 @@
     <!-- &nbsp; -->
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/built_with-Rust-dea584.svg?style=flat-square&logo=rust&logoColor=white"></a>
     &nbsp;
-    <!-- <a href="https://github.com/An1MuS1111/ironbarrel/actions"><img src="https://img.shields.io/github/actions/workflow/status/An1MuS1111/ironbarrel/ci.yml?style=flat-square&branch=master"></a> -->
-    <!-- &nbsp; -->
+    <a href="https://github.com/An1MuS1111/ironbarrel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/An1MuS1111/ironbarrel/ci.yml?style=flat-square&branch=master&label=CI"></a>
+    &nbsp;
     <a href="https://github.com/An1MuS1111/ironbarrel/blob/master/Cargo.toml"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-00bfff.svg?style=flat-square"></a>
 </p>
 
@@ -163,4 +163,4 @@ fn main() -> Result<()> {
 
 ## License
 
-The ironbarrel codebase is under [MIT](license-MIT) & [Apache 2.0 license](LICENSE-APACHE).
+The ironbarrel codebase is under [MIT](LICENSE-MIT) & [Apache 2.0 license](LICENSE-APACHE).
