@@ -72,7 +72,7 @@ jobs:
         include:
           # Oldest supported Rust. Keep in sync with `rust-version` in Cargo.toml.
           - os: ubuntu-latest
-            toolchain: "1.89"
+            toolchain: "1.95"
           # Early warning for the next Rust release. Allowed to fail.
           - os: ubuntu-latest
             toolchain: beta
