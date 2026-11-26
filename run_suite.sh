@@ -21,16 +21,16 @@ cargo build --release --example ironbarrel_bench >&2
 BIN=target/release/examples/ironbarrel_bench
 
 for sync in $SYNCS; do
-  for wl in $WORKLOADS; do
-    # read-only workload does not care about sync strategy; run it once
-    if [[ "$wl" == "c" && "$sync" != "never" ]]; then continue; fi
-    for t in $THREADS; do
-      for rep in $(seq 1 "$REPS"); do
-        echo "# sync=$sync workload=$wl threads=$t rep=$rep" >&2
-        "$BIN" --dir "$DIR" --workload "$wl" --threads "$t" --sync "$sync" \
-               --keys "$KEYS" --value-size "$VALUE" \
-               --duration "$DURATION" --warmup "$WARMUP" | grep '^RESULT'
-      done
+    for wl in $WORKLOADS; do
+        # read-only workload does not care about sync strategy; run it once
+        if [[ "$wl" == "c" && "$sync" != "never" ]]; then continue; fi
+        for t in $THREADS; do
+            for rep in $(seq 1 "$REPS"); do
+                echo "# sync=$sync workload=$wl threads=$t rep=$rep" >&2
+                "$BIN" --dir "$DIR" --workload "$wl" --threads "$t" --sync "$sync" \
+                    --keys "$KEYS" --value-size "$VALUE" \
+                    --duration "$DURATION" --warmup "$WARMUP" | grep '^RESULT'
+            done
+        done
     done
-  done
 done
