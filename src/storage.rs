@@ -448,8 +448,13 @@ impl IronBarrel {
         if !self.inner.options.auto_merge {
             return Ok(());
         }
-        let stats = self.stats()?;
-        if stats.reclaimable_bytes >= self.inner.options.merge_threshold_bytes {
+        let disk_bytes = {
+            let active = self.inner.active_file.read();
+            let imm = self.inner.immutable_files.read();
+            active.size() + imm.values().map(|f| f.size()).sum::<u64>()
+        };
+        let reclaimable = disk_bytes.saturating_sub(self.inner.keydir.live_bytes());
+        if reclaimable >= self.inner.options.merge_threshold_bytes {
             self.merge()?;
         }
         Ok(())
